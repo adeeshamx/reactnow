@@ -1,46 +1,45 @@
-// app/api/webhook/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { verifyWebhook } from "@clerk/nextjs/webhooks";
 import { MongoClient } from "mongodb";
 
-// MongoDB setup
+// MongoDB URI from env
 const uri = process.env.MONGODB_URI!;
 const client = new MongoClient(uri);
 
-export const runtime = "edge"; // or "nodejs" if you prefer
+// Ensure this route is public (no clerkMiddleware auth applied)
 
 export async function POST(req: NextRequest) {
   try {
-    // Parse incoming JSON
-    const body = await req.json();
-
-    console.log("Webhook received:", JSON.stringify(body, null, 2));
-
-    // Example: Clerk webhook verification (optional, if using secret)
-    const clerkSignature = req.headers.get("x-clerk-signature");
-    const clerkSecret = process.env.CLERK_WEBHOOK_SECRET;
-
-    if (clerkSecret && clerkSignature !== clerkSecret) {
-      console.warn("Invalid Clerk signature");
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
-    }
+    // Verify Clerk webhook
+    const event = await verifyWebhook(req);
+    console.log("Verified Clerk event:", event.type, event.data);
 
     // Connect to MongoDB
     await client.connect();
-    const db = client.db("webhooksDB");
-    const collection = db.collection("clerkEvents");
+    const db = client.db("clerkSync");
+    const users = db.collection("users");
 
-    // Save webhook data
-    await collection.insertOne({
-      event: body,
-      receivedAt: new Date(),
-    });
+    // Example: handle user.created / user.updated
+    if (event.type === "user.created" || event.type === "user.updated") {
+      const userData = event.data;
+      await users.updateOne(
+        { clerkId: userData.id },
+        { $set: { ...userData, updatedAt: new Date() } },
+        { upsert: true }
+      );
+      console.log("User synced:", userData.id);
+    }
 
-    console.log("Webhook saved to MongoDB ✅");
+    // Handle user deleted
+    if (event.type === "user.deleted") {
+      await users.deleteOne({ clerkId: event.data.id });
+      console.log("User deleted:", event.data.id);
+    }
 
-    return NextResponse.json({ message: "Webhook received" }, { status: 200 });
+    return NextResponse.json({ ok: true }, { status: 200 });
   } catch (err: any) {
     console.error("Webhook handler error:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message }, { status: 400 });
   } finally {
     await client.close();
   }
