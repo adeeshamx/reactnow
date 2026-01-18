@@ -1,19 +1,38 @@
 import mongoose from "mongoose";
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = process.env.MONGODB_URI as string;
 
-let cached = (global as any).mongoose || { conn: null, promise: null };
+if (!MONGODB_URI) {
+  throw new Error("Please define the MONGODB_URI environment variable");
+}
 
-export const connectToDatabase = async () => {
-  if (cached.conn)return cached.conn;
+type MongooseCache = {
+  conn: typeof mongoose | null;
+  promise: Promise<typeof mongoose> | null;
+};
 
-  if (!MONGODB_URI) throw new Error ('MONGODB_URI is missing');
+const globalWithMongoose = global as unknown as {
+  mongoose?: MongooseCache;
+};
 
-  cached.promise = cached.promise || mongoose.connect(MONGODB_URI,{
-    dbName: "happening",
-    bufferCommands: false,
-  })
-  cached.conn = await cached.promise;
+const cached: MongooseCache = globalWithMongoose.mongoose ?? {
+  conn: null,
+  promise: null,
+};
 
-  return cached.conn;
+globalWithMongoose.mongoose = cached;
+
+export async function connectToDatabase() {
+  if (cached.conn) {
+    return cached.conn;
   }
+
+  if (!cached.promise) {
+    cached.promise = mongoose.connect(MONGODB_URI, {
+      bufferCommands: false,
+    });
+  }
+
+  cached.conn = await cached.promise;
+  return cached.conn;
+}
