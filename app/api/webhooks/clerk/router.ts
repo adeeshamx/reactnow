@@ -1,112 +1,47 @@
-import { Webhook } from 'svix';
-import { headers } from 'next/headers';
-import { WebhookEvent } from '@clerk/nextjs/server';
-import { createUser, deleteUser, updateUser } from '@/lib/actions/user.actions';
-import { clerkClient } from '@clerk/nextjs/server';
-import { NextResponse } from 'next/server';
+// app/api/webhook/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { MongoClient } from "mongodb";
 
-export async function POST(req: Request) {
-  const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+// MongoDB setup
+const uri = process.env.MONGODB_URI!;
+const client = new MongoClient(uri);
 
-  if (!WEBHOOK_SECRET) {
-    throw new Error('Please add WEBHOOK_SECRET from Clerk Dashboard to .env or .env.local');
-  }
+export const runtime = "edge"; // or "nodejs" if you prefer
 
-  // Get the headers
-  const headerPayload = await headers();
-  const svix_id = headerPayload.get("svix-id");
-  const svix_timestamp = headerPayload.get("svix-timestamp");
-  const svix_signature = headerPayload.get("svix-signature");
-
-  if (!svix_id || !svix_timestamp || !svix_signature) {
-    return new Response('Error: Missing Svix headers', { status: 400 });
-  }
-
-  // Get the body
-  const payload = await req.json();
-  const body = JSON.stringify(payload);
-
-  const wh = new Webhook(WEBHOOK_SECRET);
-  let evt: WebhookEvent;
-
+export async function POST(req: NextRequest) {
   try {
-    evt = wh.verify(body, {
-      "svix-id": svix_id,
-      "svix-timestamp": svix_timestamp,
-      "svix-signature": svix_signature,
-    }) as WebhookEvent;
+    // Parse incoming JSON
+    const body = await req.json();
 
-    console.log("Webhook verified successfully:", evt.type);
-  } catch (err) {
-    console.error('Error verifying webhook:', err);
-    return new Response('Webhook verification failed', { status: 400 });
-  }
+    console.log("Webhook received:", JSON.stringify(body, null, 2));
 
-  const eventType = evt.type;
+    // Example: Clerk webhook verification (optional, if using secret)
+    const clerkSignature = req.headers.get("x-clerk-signature");
+    const clerkSecret = process.env.CLERK_WEBHOOK_SECRET;
 
-  try {
-    // ====================== USER CREATED ======================
-    if (eventType === 'user.created') {
-      const { id, email_addresses, image_url, first_name, last_name, username } = evt.data;
-
-      const user = {
-        clerkId: id,
-        email: email_addresses[0]?.email_address,
-        username: username ?? '',
-        firstName: first_name ?? '',
-        lastName: last_name ?? '',
-        photo: image_url ?? '',
-      };
-
-      const newUser = await createUser(user);
-      console.log("MongoDB user created:", newUser);
-
-      // Update Clerk public metadata with MongoDB _id
-      const client = await clerkClient();
-      await client.users.updateUserMetadata(id, {
-        publicMetadata: { userId: newUser._id }
-      });
-
-      return NextResponse.json({ message: 'User created', user: newUser });
+    if (clerkSecret && clerkSignature !== clerkSecret) {
+      console.warn("Invalid Clerk signature");
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
-    // ====================== USER UPDATED ======================
-    if (eventType === 'user.updated') {
-      const { id, image_url, first_name, last_name, username } = evt.data;
+    // Connect to MongoDB
+    await client.connect();
+    const db = client.db("webhooksDB");
+    const collection = db.collection("clerkEvents");
 
-      const user = {
-        firstName: first_name ?? '',
-        lastName: last_name ?? '',
-        username: username ?? '',
-        photo: image_url ?? '',
-      };
+    // Save webhook data
+    await collection.insertOne({
+      event: body,
+      receivedAt: new Date(),
+    });
 
-      const updatedUser = await updateUser(id, user);
-      console.log("MongoDB user updated:", updatedUser);
+    console.log("Webhook saved to MongoDB ✅");
 
-      return NextResponse.json({ message: 'User updated', user: updatedUser });
-    }
-
-    // ====================== USER DELETED ======================
-    if (eventType === 'user.deleted') {
-      const { id } = evt.data;
-
-      if (!id) {
-        return new Response('Error: Missing user id', { status: 400 });
-      }
-
-      const deletedUser = await deleteUser(id);
-      console.log("MongoDB user deleted:", deletedUser);
-
-      return NextResponse.json({ message: 'User deleted', user: deletedUser });
-    }
-
-    // ====================== OTHER EVENTS ======================
-    console.log("Unhandled event type:", eventType);
-    return new Response('Event ignored', { status: 200 });
-
-  } catch (err) {
-    console.error("Error processing event:", err);
-    return new Response('Internal server error', { status: 500 });
+    return NextResponse.json({ message: "Webhook received" }, { status: 200 });
+  } catch (err: any) {
+    console.error("Webhook handler error:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  } finally {
+    await client.close();
   }
 }
