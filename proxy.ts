@@ -1,15 +1,16 @@
+// proxy.ts
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// 1. Define your webhook route as public so Clerk can "talk" to it
+// Define the routes that DO NOT need authentication
 const isPublicRoute = createRouteMatcher([
-  '/api/webhooks/clerk(.*)', 
-  '/sign-in(.*)', 
-  '/sign-up(.*)',
-  '/'
+  "/",                         // Home page
+  "/api/webhooks/clerk(.*)",   // YOUR WEBHOOK ROUTE (Crucial)
+  "/sign-in(.*)", 
+  "/sign-up(.*)"
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
-  // 2. Protect all routes EXCEPT the ones defined above
+  // Protect everything except the public routes listed above
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
@@ -17,7 +18,7 @@ export default clerkMiddleware(async (auth, request) => {
 
 export const config = {
   matcher: [
-    // 3. Skip Next.js internals and static files
+    // Matches all routes except static files (images, etc.)
     '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
     // Always run for API routes
     '/(api|trpc)(.*)',

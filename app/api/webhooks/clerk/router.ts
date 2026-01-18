@@ -1,46 +1,58 @@
-import { NextRequest, NextResponse } from "next/server";
-import { verifyWebhook } from "@clerk/nextjs/webhooks";
-import { MongoClient } from "mongodb";
+// app/api/webhooks/clerk/route.ts
+import { Webhook } from 'svix'
+import { headers } from 'next/headers'
+import { WebhookEvent } from '@clerk/nextjs/server'
 
-// MongoDB URI from env
-const uri = process.env.MONGODB_URI!;
-const client = new MongoClient(uri);
+export async function POST(req: Request) {
+  const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
 
-// Ensure this route is public (no clerkMiddleware auth applied)
-
-export async function POST(req: NextRequest) {
-  try {
-    // Verify Clerk webhook
-    const event = await verifyWebhook(req);
-    console.log("Verified Clerk event:", event.type, event.data);
-
-    // Connect to MongoDB
-    await client.connect();
-    const db = client.db("clerkSync");
-    const users = db.collection("users");
-
-    // Example: handle user.created / user.updated
-    if (event.type === "user.created" || event.type === "user.updated") {
-      const userData = event.data;
-      await users.updateOne(
-        { clerkId: userData.id },
-        { $set: { ...userData, updatedAt: new Date() } },
-        { upsert: true }
-      );
-      console.log("User synced:", userData.id);
-    }
-
-    // Handle user deleted
-    if (event.type === "user.deleted") {
-      await users.deleteOne({ clerkId: event.data.id });
-      console.log("User deleted:", event.data.id);
-    }
-
-    return NextResponse.json({ ok: true }, { status: 200 });
-  } catch (err: any) {
-    console.error("Webhook handler error:", err);
-    return NextResponse.json({ error: err.message }, { status: 400 });
-  } finally {
-    await client.close();
+  if (!WEBHOOK_SECRET) {
+    throw new Error('Please add WEBHOOK_SECRET from Clerk Dashboard to .env or Vercel Settings')
   }
+
+  // Get the headers from Svix
+  const headerPayload = await headers();
+  const svix_id = headerPayload.get("svix-id");
+  const svix_timestamp = headerPayload.get("svix-timestamp");
+  const svix_signature = headerPayload.get("svix-signature");
+
+  // If there are no headers, error out
+  if (!svix_id || !svix_timestamp || !svix_signature) {
+    return new Response('Error occured -- no svix headers', {
+      status: 400
+    })
+  }
+
+  // Get the body
+  const payload = await req.json()
+  const body = JSON.stringify(payload);
+
+  // Create a new Svix instance with your secret.
+  const wh = new Webhook(WEBHOOK_SECRET);
+
+  let evt: WebhookEvent
+
+  // Verify the payload with the headers
+  try {
+    evt = wh.verify(body, {
+      "svix-id": svix_id,
+      "svix-timestamp": svix_timestamp,
+      "svix-signature": svix_signature,
+    }) as WebhookEvent
+  } catch (err) {
+    console.error('Error verifying webhook:', err);
+    return new Response('Error occured', {
+      status: 400
+    })
+  }
+
+  // Handle the webhook (Example: User Created)
+  const eventType = evt.type;
+  if (eventType === 'user.created') {
+    const { id, email_addresses, image_url, first_name, last_name } = evt.data;
+    console.log(`User ${id} was created`);
+    // ADD YOUR DATABASE LOGIC HERE (e.g., Prisma, Supabase)
+  }
+
+  return new Response('', { status: 200 })
 }
